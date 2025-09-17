@@ -1,9 +1,11 @@
 #include <pybind11/complex.h>
 #include <pybind11/stl.h>
+#include <pybind11/stl/filesystem.h>
 
 #include "modules.h"
 
 #include <complex>
+#include <filesystem>
 #include <map>
 #include <variant>
 
@@ -13,4 +15,5 @@ void bind_stl_module(py::module &&m) {
     m.def("std_array", [](const std::array<int, 3> &a) { return a; });
     m.def("std_variant", [](const std::variant<int, float, std::pair<int, int>> &) {});
     m.def("std_optional", [](const std::optional<int> &) {});
+    m.def("std_filesystem", [](const std::filesystem::path &path) {});
 }
