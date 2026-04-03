@@ -42,7 +42,6 @@ T = TypeVar("T")
 
 
 class RemoveSelfAnnotation(IParser):
-
     __any_t_name = QualifiedName.from_str("Any")
     __typing_any_t_name = QualifiedName.from_str("typing.Any")
 
@@ -276,6 +275,23 @@ class FixMissing__all__Attribute(IParser):
 class FixBuiltinTypes(IParser):
     _any_type = QualifiedName.from_str("typing.Any")
 
+    _hidden_builtins = {
+        getattr(types, name).__qualname__: name
+        for name in dir(types)
+        if isinstance(getattr(types, name), type)
+        and getattr(getattr(types, name), "__module__", None)
+        == "builtins"  # defined in types, but reports `builtins`
+        and not hasattr(builtins, name)  # not actually available in `builtins`
+    }
+    """Types by their real name that are available in the `types` module,
+    but report `builtins` at runtime."""
+
+    _hidden_builtins_overrides = {
+        "function": "typing.Callable",
+        "builtin_function_or_method": "typing.Callable",
+    }
+    """Manual overrides for builtin types."""
+
     def handle_type(self, type_: type) -> QualifiedName:
         if type_.__qualname__ == "PyCapsule" and type_.__module__ == "builtins":
             return self._any_type
@@ -283,12 +299,34 @@ class FixBuiltinTypes(IParser):
         result = super().handle_type(type_)
 
         if result[0] == "builtins":
-            if result[1] == "NoneType":
-                return QualifiedName((Identifier("None"),))
-            if result[1] in ("function", "builtin_function_or_method"):
-                callable_t = self.parse_annotation_str("typing.Callable")
-                assert isinstance(callable_t, ResolvedType)
-                return callable_t.name
+            typename = result[1]
+
+            if typename == "NoneType":
+                return QualifiedName(
+                    (Identifier("None"),)
+                )  # just print None instead of types.NoneType
+
+            # some types (e.g. `types.MappingProxyType`) report a wrong qualname
+            #  at runtime, and module == `builtins`
+            # we collect these upfront and translate their "builtin" name to the
+            #  importable one
+            hidden_builtin = self._hidden_builtins.get(typename)
+            if hidden_builtin is not None:
+                # some of these types are better described via the `typing`
+                # special forms e.g. types.FunctionType -> typing.Callable,
+                # so we use the override name
+                hidden_builtin_override = self._hidden_builtins_overrides.get(typename)
+
+                annotation = hidden_builtin_override or "types.%s" % hidden_builtin
+
+                override_t = self.parse_annotation_str(annotation)
+                if not isinstance(override_t, ResolvedType):
+                    raise TypeError(
+                        f"Expected ResolvedType for {annotation!r}, "
+                        f"got {type(override_t).__name__}"
+                    )
+                return override_t.name
+
             return QualifiedName(result[1:])
 
         return result
