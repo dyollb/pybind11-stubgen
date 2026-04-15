@@ -137,8 +137,13 @@ def _topological_sort_classes(classes: list[Class]) -> list[Class]:
 
 
 class Printer:
-    def __init__(self, invalid_expr_as_ellipses: bool):
+    def __init__(
+        self,
+        invalid_expr_as_ellipses: bool,
+        print_value_comments: bool = False,
+    ):
         self.invalid_expr_as_ellipses = invalid_expr_as_ellipses
+        self.print_value_comments = print_value_comments
 
     def _order_classes(self, classes: list[Class]) -> list[Class]:
         return _topological_sort_classes(classes)
@@ -158,7 +163,7 @@ class Printer:
         else:
             if attr.annotation is None:
                 parts.append(" = ...")
-            if attr.value is not None:
+            if attr.value is not None and self.print_value_comments:
                 parts.append(f"  # value = {self.print_value(attr.value)}")
 
         return ["".join(parts)]
