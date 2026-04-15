@@ -73,7 +73,7 @@ class CLIArgs(Namespace):
     numpy_array_remove_parameters: bool
     print_invalid_expressions_as_is: bool
     print_safe_value_reprs: re.Pattern | None
-    print_disable_value_comments: bool
+    print_value_comments: bool
     exit_code: bool
     dry_run: bool
     stub_extension: str
@@ -192,10 +192,10 @@ def arg_parser() -> ArgumentParser:
         help="Override the print-safe check for values matching REGEX",
     )
     parser.add_argument(
-        "--print-disable-value-comments",
+        "--print-value-comments",
         default=False,
         action="store_true",
-        help="Disable printing attribute value comments, i.e., '# value = <value>'",
+        help="Print attribute values as comments for debugging, i.e., '...  # value = <value>'",
     )
 
     parser.add_argument(
@@ -317,7 +317,7 @@ def main():
     parser = stub_parser_from_args(args)
     printer = Printer(
         invalid_expr_as_ellipses=not args.print_invalid_expressions_as_is,
-        print_disable_value_comments=args.print_disable_value_comments,
+        print_value_comments=args.print_value_comments,
     )
 
     out_dir, sub_dir = to_output_and_subdir(
