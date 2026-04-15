@@ -48,7 +48,7 @@ class ParserDispatchMixin(IParser):
     def handle_class(self, path: QualifiedName, class_: type) -> Class | None:
         base_classes = class_.__bases__
         result = Class(name=path[-1], bases=self.handle_bases(path, base_classes))
-        for name, member in inspect.getmembers(class_):
+        for name, member in self._iter_class_members(class_):
             obj = self.handle_class_member(
                 QualifiedName([*path, Identifier(name)]), class_, member
             )
@@ -70,6 +70,30 @@ class ParserDispatchMixin(IParser):
                 raise AssertionError()
         return result
 
+    def _iter_class_members(self, class_: type):
+        seen: set[str] = set()
+
+        # Iterate __dict__ keys for definition order, but resolve values
+        # through getattr() so descriptors (staticmethod, properties, etc.)
+        # are properly unwrapped — matching inspect.getmembers() semantics.
+        for name in class_.__dict__:
+            seen.add(name)
+            try:
+                value = getattr(class_, name)
+            except AttributeError:
+                continue
+            yield name, value
+
+        # Append inherited or lazily exposed members from dir().
+        for name in dir(class_):
+            if name in seen:
+                continue
+            try:
+                value = getattr(class_, name)
+            except AttributeError:
+                continue
+            yield name, value
+
     def handle_class_member(
         self, path: QualifiedName, class_: type, member: Any
     ) -> Docstring | Alias | Class | list[Method] | Field | Property | None:
@@ -89,7 +113,7 @@ class ParserDispatchMixin(IParser):
         self, path: QualifiedName, module: types.ModuleType
     ) -> Module | None:
         result = Module(name=path[-1])
-        for name, member in inspect.getmembers(module):
+        for name, member in self._iter_module_members(module):
             obj = self.handle_module_member(
                 QualifiedName([*path, Identifier(name)]), module, member
             )
@@ -116,6 +140,24 @@ class ParserDispatchMixin(IParser):
                 raise AssertionError()
 
         return result
+
+    def _iter_module_members(self, module: types.ModuleType):
+        seen: set[str] = set()
+
+        # Preserve definition order for regular module globals, which reflects
+        # pybind11 registration order, and then append lazily exposed members.
+        for name, member in module.__dict__.items():
+            seen.add(name)
+            yield name, member
+
+        for name in dir(module):
+            if name in seen:
+                continue
+            try:
+                member = getattr(module, name)
+            except AttributeError:
+                continue
+            yield name, member
 
     def handle_module_member(
         self, path: QualifiedName, module: types.ModuleType, member: Any
@@ -647,9 +689,7 @@ class ExtractSignaturesFromPybind11Docstrings(IParser):
                 # This syntax is not supported before Python 3.12.
                 return []
             type_vars: list[str] = list(
-                filter(
-                    bool, map(str.strip, (type_vars_group or "").split(","))
-                )
+                filter(bool, map(str.strip, (type_vars_group or "").split(",")))
             )
             args = self.call_with_local_types(
                 type_vars, lambda: self.parse_args_str(match.group("args"))
