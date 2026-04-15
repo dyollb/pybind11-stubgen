@@ -7,7 +7,7 @@ import re
 import sys
 import types
 from logging import getLogger
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from pybind11_stubgen.parser.errors import (
     InvalidExpressionError,
@@ -38,9 +38,10 @@ from pybind11_stubgen.typing_ext import DynamicSize, FixedSize
 
 logger = getLogger("pybind11_stubgen")
 
+T = TypeVar("T")
+
 
 class RemoveSelfAnnotation(IParser):
-
     __any_t_name = QualifiedName.from_str("Any")
     __typing_any_t_name = QualifiedName.from_str("typing.Any")
 
@@ -88,6 +89,7 @@ class FixMissingImports(IParser):
         self.__extra_imports: set[Import] = set()
         self.__current_module: types.ModuleType | None = None
         self.__current_class: type | None = None
+        self.__local_types: set[str] = set()
 
     def handle_alias(self, path: QualifiedName, origin: Any) -> Alias | None:
         result = super().handle_alias(path, origin)
@@ -144,6 +146,13 @@ class FixMissingImports(IParser):
             self._add_import(QualifiedName.from_str(result.repr))
         return result
 
+    def call_with_local_types(self, parameters: list[str], func: Callable[[], T]) -> T:
+        original_local_types = self.__local_types.copy()
+        self.__local_types.update(parameters)
+        result = super().call_with_local_types(parameters, func)
+        self.__local_types = original_local_types
+        return result
+
     def parse_annotation_str(
         self, annotation_str: str
     ) -> ResolvedType | InvalidExpression | Value:
@@ -155,7 +164,7 @@ class FixMissingImports(IParser):
     def _add_import(self, name: QualifiedName) -> None:
         if len(name) == 0:
             return
-        if len(name) == 1 and len(name[0]) == 0:
+        if len(name) == 1 and (len(name[0]) == 0 or name[0] in self.__local_types):
             return
         if hasattr(builtins, name[0]):
             return
@@ -256,7 +265,7 @@ class FixMissing__all__Attribute(IParser):
             Attribute(
                 name=Identifier("__all__"),
                 value=self.handle_value(all_names),
-                # annotation=ResolvedType(name=QualifiedName.from_str("list")),
+                annotation=ResolvedType(name=QualifiedName.from_str("list[str]")),
             )
         )
 
@@ -266,6 +275,23 @@ class FixMissing__all__Attribute(IParser):
 class FixBuiltinTypes(IParser):
     _any_type = QualifiedName.from_str("typing.Any")
 
+    _hidden_builtins = {
+        getattr(types, name).__qualname__: name
+        for name in dir(types)
+        if isinstance(getattr(types, name), type)
+        and getattr(getattr(types, name), "__module__", None)
+        == "builtins"  # defined in types, but reports `builtins`
+        and not hasattr(builtins, name)  # not actually available in `builtins`
+    }
+    """Types by their real name that are available in the `types` module,
+    but report `builtins` at runtime."""
+
+    _hidden_builtins_overrides = {
+        "function": "typing.Callable",
+        "builtin_function_or_method": "typing.Callable",
+    }
+    """Manual overrides for builtin types."""
+
     def handle_type(self, type_: type) -> QualifiedName:
         if type_.__qualname__ == "PyCapsule" and type_.__module__ == "builtins":
             return self._any_type
@@ -273,12 +299,34 @@ class FixBuiltinTypes(IParser):
         result = super().handle_type(type_)
 
         if result[0] == "builtins":
-            if result[1] == "NoneType":
-                return QualifiedName((Identifier("None"),))
-            if result[1] in ("function", "builtin_function_or_method"):
-                callable_t = self.parse_annotation_str("typing.Callable")
-                assert isinstance(callable_t, ResolvedType)
-                return callable_t.name
+            typename = result[1]
+
+            if typename == "NoneType":
+                return QualifiedName(
+                    (Identifier("None"),)
+                )  # just print None instead of types.NoneType
+
+            # some types (e.g. `types.MappingProxyType`) report a wrong qualname
+            #  at runtime, and module == `builtins`
+            # we collect these upfront and translate their "builtin" name to the
+            #  importable one
+            hidden_builtin = self._hidden_builtins.get(typename)
+            if hidden_builtin is not None:
+                # some of these types are better described via the `typing`
+                # special forms e.g. types.FunctionType -> typing.Callable,
+                # so we use the override name
+                hidden_builtin_override = self._hidden_builtins_overrides.get(typename)
+
+                annotation = hidden_builtin_override or "types.%s" % hidden_builtin
+
+                override_t = self.parse_annotation_str(annotation)
+                if not isinstance(override_t, ResolvedType):
+                    raise TypeError(
+                        f"Expected ResolvedType for {annotation!r}, "
+                        f"got {type(override_t).__name__}"
+                    )
+                return override_t.name
+
             return QualifiedName(result[1:])
 
         return result
@@ -483,17 +531,19 @@ class FixValueReprRandomAddress(IParser):
     repr examples:
         <capsule object NULL at 0x7fdfdf8b5f20> # PyCapsule
         <foo.bar.Baz object at 0x7fdfdf8b5f20>
+        <WeakKeyDictionary at 0x7f89ddd7ecf0>  # no "object" keyword
     """
 
     _pattern = re.compile(
-        r"<(?P<name>[\w.]+) object "
-        r"(?P<capsule>\w+\s)*at "
-        r"(?P<address>0x[a-fA-F0-9]+)>"
+        r"<(?P<name>[\w.]+(?:\s+object)?)"
+        r"(?:\s+\w+)*"
+        r"\s+at\s+"
+        r"0x[a-fA-F0-9]+>"
     )
 
     def handle_value(self, value: Any) -> Value:
         result = super().handle_value(value)
-        result.repr = self._pattern.sub(r"<\g<name> object>", result.repr)
+        result.repr = self._pattern.sub(r"<\g<name>>", result.repr)
         return result
 
 
@@ -512,22 +562,28 @@ class FixNumpyArrayDimAnnotation(IParser):
     __annotated_name = QualifiedName.from_str("Annotated")
     numpy_primitive_types: set[QualifiedName] = set(
         map(
-            lambda name: QualifiedName.from_str(f"numpy.{name}"),
+            QualifiedName.from_str,
             (
-                "uint8",
-                "int8",
-                "uint16",
-                "int16",
-                "uint32",
-                "int32",
-                "uint64",
-                "int64",
-                "float16",
-                "float32",
-                "float64",
-                "complex32",
-                "complex64",
-                "longcomplex",
+                "bool",
+                *map(
+                    lambda name: f"numpy.{name}",
+                    (
+                        "uint8",
+                        "int8",
+                        "uint16",
+                        "int16",
+                        "uint32",
+                        "int32",
+                        "uint64",
+                        "int64",
+                        "float16",
+                        "float32",
+                        "float64",
+                        "complex32",
+                        "complex64",
+                        "longcomplex",
+                    ),
+                ),
             ),
         )
     )
@@ -630,6 +686,7 @@ class FixNumpyArrayDimTypeVar(IParser):
     numpy_primitive_types = FixNumpyArrayDimAnnotation.numpy_primitive_types
 
     __DIM_VARS: set[str] = set()
+    __local_types: set[str] = set()
 
     def handle_module(
         self, path: QualifiedName, module: types.ModuleType
@@ -656,6 +713,13 @@ class FixNumpyArrayDimTypeVar(IParser):
 
         return result
 
+    def call_with_local_types(self, parameters: list[str], func: Callable[[], T]) -> T:
+        original_local_types = self.__local_types.copy()
+        self.__local_types.update(parameters)
+        result = super().call_with_local_types(parameters, func)
+        self.__local_types = original_local_types
+        return result
+
     def parse_annotation_str(
         self, annotation_str: str
     ) -> ResolvedType | InvalidExpression | Value:
@@ -667,6 +731,9 @@ class FixNumpyArrayDimTypeVar(IParser):
         result = super().parse_annotation_str(annotation_str)
 
         if not isinstance(result, ResolvedType):
+            return result
+
+        if len(result.name) == 1 and result.name[0] in self.__local_types:
             return result
 
         # handle unqualified, single-letter annotation as a TypeVar
@@ -696,9 +763,15 @@ class FixNumpyArrayDimTypeVar(IParser):
         ):
             return result
 
+        name = scalar_with_dims.name
+        # Pybind annotates a bool Python type, which cannot be used with
+        # numpy.dtype because it does not inherit from numpy.generic.
+        # Only numpy.bool_ works reliably with both NumPy 1.x and 2.x.
+        if str(name) == "bool":
+            name = QualifiedName.from_str("numpy.bool_")
         dtype = ResolvedType(
             name=QualifiedName.from_str("numpy.dtype"),
-            parameters=[ResolvedType(name=scalar_with_dims.name)],
+            parameters=[ResolvedType(name=name)],
         )
 
         shape = self.parse_annotation_str("Any")

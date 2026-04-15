@@ -4,7 +4,7 @@ import typing
 
 import numpy
 
-__all__ = [
+__all__: list[str] = [
     "accept_ndarray_float64",
     "accept_ndarray_int",
     "get_ndarray_float64",
@@ -13,7 +13,7 @@ __all__ = [
 ]
 
 def accept_ndarray_float64(
-    arg0: typing.Annotated[numpy.ndarray, numpy.float64]
+    arg0: typing.Annotated[numpy.ndarray, numpy.float64],
 ) -> None: ...
 def accept_ndarray_int(arg0: typing.Annotated[numpy.ndarray, numpy.int32]) -> None: ...
 def get_ndarray_float64() -> typing.Annotated[numpy.ndarray, numpy.float64]: ...

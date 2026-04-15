@@ -19,7 +19,7 @@ from . import (
     missing_self_arg,
 )
 
-__all__ = [
+__all__: list[str] = [
     "Color",
     "Dummy",
     "foreign_arg",
@@ -38,16 +38,16 @@ __all__ = [
     "random",
 ]
 
-class Color:
-    pass
-
 class Dummy:
     linalg = numpy.linalg
+
+class Color:
+    pass
 
 def foreign_enum_default(
     color: typing.Any = demo._bindings.enum.ConsoleForegroundColor.Blue,
 ) -> None: ...
 def func(arg0: int) -> int: ...
 
-local_func_alias = func
 local_type_alias = Color
+local_func_alias = func

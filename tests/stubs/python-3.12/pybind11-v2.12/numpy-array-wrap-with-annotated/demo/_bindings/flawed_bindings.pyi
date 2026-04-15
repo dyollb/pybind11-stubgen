@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__all__ = [
+__all__: list[str] = [
     "Enum",
     "Unbound",
     "accept_unbound_enum",
@@ -10,10 +10,10 @@ __all__ = [
     "get_unbound_type",
 ]
 
-class Enum:
+class Unbound:
     pass
 
-class Unbound:
+class Enum:
     pass
 
 def accept_unbound_enum(arg0: ...) -> int: ...

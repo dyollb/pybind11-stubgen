@@ -3,8 +3,9 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import sys
 import types
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from pybind11_stubgen.parser.errors import (
     InvalidExpressionError,
@@ -40,12 +41,14 @@ _generic_args = [
     Argument(name=Identifier("kwargs"), kw_variadic=True),
 ]
 
+T = TypeVar("T")
+
 
 class ParserDispatchMixin(IParser):
     def handle_class(self, path: QualifiedName, class_: type) -> Class | None:
         base_classes = class_.__bases__
         result = Class(name=path[-1], bases=self.handle_bases(path, base_classes))
-        for name, member in inspect.getmembers(class_):
+        for name, member in self._iter_class_members(class_):
             obj = self.handle_class_member(
                 QualifiedName([*path, Identifier(name)]), class_, member
             )
@@ -67,6 +70,30 @@ class ParserDispatchMixin(IParser):
                 raise AssertionError()
         return result
 
+    def _iter_class_members(self, class_: type):
+        seen: set[str] = set()
+
+        # Iterate __dict__ keys for definition order, but resolve values
+        # through getattr() so descriptors (staticmethod, properties, etc.)
+        # are properly unwrapped — matching inspect.getmembers() semantics.
+        for name in class_.__dict__:
+            seen.add(name)
+            try:
+                value = getattr(class_, name)
+            except AttributeError:
+                continue
+            yield name, value
+
+        # Append inherited or lazily exposed members from dir().
+        for name in dir(class_):
+            if name in seen:
+                continue
+            try:
+                value = getattr(class_, name)
+            except AttributeError:
+                continue
+            yield name, value
+
     def handle_class_member(
         self, path: QualifiedName, class_: type, member: Any
     ) -> Docstring | Alias | Class | list[Method] | Field | Property | None:
@@ -86,7 +113,7 @@ class ParserDispatchMixin(IParser):
         self, path: QualifiedName, module: types.ModuleType
     ) -> Module | None:
         result = Module(name=path[-1])
-        for name, member in inspect.getmembers(module):
+        for name, member in self._iter_module_members(module):
             obj = self.handle_module_member(
                 QualifiedName([*path, Identifier(name)]), module, member
             )
@@ -107,11 +134,30 @@ class ParserDispatchMixin(IParser):
             elif isinstance(obj, TypeVar_):
                 result.type_vars.append(obj)
             elif obj is None:
-                pass
+                if name == "__path__":
+                    result.is_package = True
             else:
                 raise AssertionError()
 
         return result
+
+    def _iter_module_members(self, module: types.ModuleType):
+        seen: set[str] = set()
+
+        # Preserve definition order for regular module globals, which reflects
+        # pybind11 registration order, and then append lazily exposed members.
+        for name, member in module.__dict__.items():
+            seen.add(name)
+            yield name, member
+
+        for name in dir(module):
+            if name in seen:
+                continue
+            try:
+                member = getattr(module, name)
+            except AttributeError:
+                continue
+            yield name, member
 
     def handle_module_member(
         self, path: QualifiedName, module: types.ModuleType, member: Any
@@ -383,6 +429,9 @@ class BaseParser(IParser):
             )
         )
 
+    def call_with_local_types(self, parameters: list[str], func: Callable[[], T]) -> T:
+        return func()
+
     def parse_value_str(self, value: str) -> Value | InvalidExpression:
         return self._parse_expression_str(value)
 
@@ -417,10 +466,15 @@ class BaseParser(IParser):
             if qual_name is None:
                 self.report_error(NameResolutionError(path))
                 return None
-            # Note: `PyCapsule.` prefix in __qualname__ is an artefact of pybind11
-            _PyCapsule = "PyCapsule."
-            if qual_name.startswith(_PyCapsule):
-                qual_name = qual_name[len(_PyCapsule) :]
+            # Note: __qualname__ prefix is an artefact of pybind11
+            # `PyCapsule.` in pybind11 2
+            # pybind11_detail_function_record_* in 3
+            match = re.match(
+                r"(PyCapsule|pybind11_detail_function_record_[_a-zA-Z0-9]+)\.",
+                qual_name,
+            )
+            if match:
+                qual_name = qual_name[match.end() :]
             origin_full_name = f"{module_name}.{qual_name}"
 
         origin_name = QualifiedName.from_str(origin_full_name)
@@ -577,7 +631,7 @@ class ExtractSignaturesFromPybind11Docstrings(IParser):
         assert isinstance(union_t, ResolvedType)
         return ResolvedType(
             name=union_t.name,
-            parameters=[self.parse_type_str(variant) for variant in variants],
+            parameters=[self.parse_annotation_str(variant) for variant in variants],
         )
 
     def parse_type_str(
@@ -618,7 +672,9 @@ class ExtractSignaturesFromPybind11Docstrings(IParser):
             return []
 
         top_signature_regex = re.compile(
-            rf"^{func_name}\((?P<args>.*)\)\s*(->\s*(?P<returns>.+))?$"
+            rf"^{func_name}"
+            r"(\[(?P<type_vars>[\w\s,]*)])?"
+            r"\((?P<args>.*)\)\s*(->\s*(?P<returns>.+))?$"
         )
 
         match = top_signature_regex.match(doc_lines[0])
@@ -626,24 +682,41 @@ class ExtractSignaturesFromPybind11Docstrings(IParser):
             return []
 
         if len(doc_lines) < 2 or doc_lines[1] != "Overloaded function.":
+            # TODO: Update to support more complex formats.
+            #  This only supports bare type parameters.
+            type_vars_group = match.group("type_vars")
+            if sys.version_info < (3, 12) and type_vars_group:
+                # This syntax is not supported before Python 3.12.
+                return []
+            type_vars: list[str] = list(
+                filter(bool, map(str.strip, (type_vars_group or "").split(",")))
+            )
+            args = self.call_with_local_types(
+                type_vars, lambda: self.parse_args_str(match.group("args"))
+            )
+
             returns_str = match.group("returns")
             if returns_str is not None:
-                returns = self.parse_annotation_str(returns_str)
+                returns = self.call_with_local_types(
+                    type_vars, lambda: self.parse_annotation_str(returns_str)
+                )
             else:
                 returns = None
 
             return [
                 Function(
                     name=func_name,
-                    args=self.parse_args_str(match.group("args")),
+                    args=args,
                     doc=self._strip_empty_lines(doc_lines[1:]),
                     returns=returns,
+                    type_vars=type_vars,
                 )
             ]
 
         overload_signature_regex = re.compile(
-            rf"^(\s*(?P<overload_number>\d+).\s*)"
-            rf"{func_name}\((?P<args>.*)\)\s*->\s*(?P<returns>.+)$"
+            rf"^(\s*(?P<overload_number>\d+)\.\s*){func_name}"
+            r"(\[(?P<type_vars>[\w\s,]*)])?"
+            r"\((?P<args>.*)\)\s*->\s*(?P<returns>.+)$"
         )
 
         doc_start = 0
@@ -655,18 +728,38 @@ class ExtractSignaturesFromPybind11Docstrings(IParser):
             if match:
                 if match.group("overload_number") != f"{len(overloads)}":
                     continue
+                type_vars_group = match.group("type_vars")
+                if sys.version_info < (3, 12) and type_vars_group:
+                    # This syntax is not supported before Python 3.12.
+                    continue
                 overloads[-1].doc = self._strip_empty_lines(doc_lines[doc_start:i])
                 doc_start = i + 1
+                # TODO: Update to support more complex formats.
+                #  This only supports bare type parameters.
+
+                type_vars: list[str] = list(
+                    filter(
+                        bool,
+                        map(str.strip, (type_vars_group or "").split(",")),
+                    )
+                )
+                args = self.call_with_local_types(
+                    type_vars, lambda: self.parse_args_str(match.group("args"))
+                )
+                returns = self.call_with_local_types(
+                    type_vars, lambda: self.parse_annotation_str(match.group("returns"))
+                )
                 overloads.append(
                     Function(
                         name=func_name,
-                        args=self.parse_args_str(match.group("args")),
-                        returns=self.parse_annotation_str(match.group("returns")),
+                        args=args,
+                        returns=returns,
                         doc=None,
                         decorators=[
                             # use `parse_annotation_str()` to trigger typing import
                             Decorator(str(self.parse_annotation_str("typing.overload")))
                         ],
+                        type_vars=type_vars,
                     )
                 )
 

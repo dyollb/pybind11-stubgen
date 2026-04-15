@@ -7,6 +7,7 @@ from demo._bindings import (
     enum,
     flawed_bindings,
     functions,
+    hidden_builtins,
     issues,
     methods,
     numpy,
@@ -19,7 +20,7 @@ from demo._bindings import (
 
 from . import _bindings, core, pure_python
 
-__all__ = [
+__all__: list[str] = [
     "aliases",
     "classes",
     "core",
@@ -27,6 +28,7 @@ __all__ = [
     "enum",
     "flawed_bindings",
     "functions",
+    "hidden_builtins",
     "issues",
     "methods",
     "numpy",

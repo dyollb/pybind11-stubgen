@@ -7,6 +7,7 @@ from demo._bindings import (
     enum,
     flawed_bindings,
     functions,
+    hidden_builtins,
     issues,
     methods,
     numpy,
@@ -17,13 +18,14 @@ from demo._bindings import (
     values,
 )
 
-__all__ = [
+__all__: list[str] = [
     "aliases",
     "classes",
     "eigen",
     "enum",
     "flawed_bindings",
     "functions",
+    "hidden_builtins",
     "issues",
     "methods",
     "numpy",

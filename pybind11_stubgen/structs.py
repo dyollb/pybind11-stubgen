@@ -142,6 +142,7 @@ class Function:
     returns: Annotation | None = field_(default=None)
     doc: Docstring | None = field_(default=None)
     decorators: list[Decorator] = field_(default_factory=list)
+    type_vars: list[str] = field_(default_factory=list)
 
     def __str__(self):
         return (
@@ -199,3 +200,4 @@ class Module:
     imports: set[Import] = field_(default_factory=set)
     aliases: list[Alias] = field_(default_factory=list)
     type_vars: list[TypeVar_] = field_(default_factory=list)
+    is_package: bool = field_(default=False)
