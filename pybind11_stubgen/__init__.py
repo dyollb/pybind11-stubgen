@@ -196,7 +196,8 @@ def arg_parser() -> ArgumentParser:
         "--print-value-comments",
         default=False,
         action="store_true",
-        help="Print attribute values as comments for debugging, i.e., '...  # value = <value>'",
+        help="Print attribute values as comments for debugging, "
+        "i.e., '...  # value = <value>'",
     )
 
     parser.add_argument(
