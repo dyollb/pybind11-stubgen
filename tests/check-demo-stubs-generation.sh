@@ -2,8 +2,6 @@
 
 set -e
 
-PYTHON_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')
-
 resolve_path() {
   local path="$1"
 
@@ -55,7 +53,7 @@ remove_stubs() {
 }
 
 run_stubgen() {
-  ${PYTHON_EXECUTABLE} -m pybind11_stubgen \
+  pybind11-stubgen \
       demo \
       --output-dir=${STUBS_DIR} \
       ${NUMPY_FORMAT} \
@@ -69,8 +67,9 @@ run_stubgen() {
 format_stubs() {
   (
     cd "${STUBS_DIR}" ;
-    black . ;
-    isort --profile=black . ;
+    PYTHON_TARGET=$(python -c "import sys; print(f'py{sys.version_info.major}{sys.version_info.minor}')")
+    ruff format --target-version "${PYTHON_TARGET}" .
+    ruff check --select I,RUF022 --fix --target-version "${PYTHON_TARGET}" .
   )
 }
 

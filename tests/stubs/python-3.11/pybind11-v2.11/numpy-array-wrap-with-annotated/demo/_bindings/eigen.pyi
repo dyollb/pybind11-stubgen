@@ -3,8 +3,9 @@ from __future__ import annotations
 import typing
 
 import numpy
-import pybind11_stubgen.typing_ext
 import scipy.sparse
+
+import pybind11_stubgen.typing_ext
 
 __all__: list[str] = [
     "accept_matrix_int",
@@ -86,16 +87,12 @@ def four_row_matrix_r(
 ) -> typing.Annotated[
     numpy.ndarray, numpy.float32, pybind11_stubgen.typing_ext.DynamicSize(4, "n")
 ]: ...
-def get_matrix_int() -> (
-    typing.Annotated[
-        numpy.ndarray, numpy.int32, pybind11_stubgen.typing_ext.FixedSize(3, 3)
-    ]
-): ...
-def get_vector_float64() -> (
-    typing.Annotated[
-        numpy.ndarray, numpy.float64, pybind11_stubgen.typing_ext.FixedSize(3, 1)
-    ]
-): ...
+def get_matrix_int() -> typing.Annotated[
+    numpy.ndarray, numpy.int32, pybind11_stubgen.typing_ext.FixedSize(3, 3)
+]: ...
+def get_vector_float64() -> typing.Annotated[
+    numpy.ndarray, numpy.float64, pybind11_stubgen.typing_ext.FixedSize(3, 1)
+]: ...
 def sparse_matrix_c(
     arg0: typing.Annotated[scipy.sparse.csc_matrix, numpy.float32],
 ) -> typing.Annotated[scipy.sparse.csc_matrix, numpy.float32]: ...

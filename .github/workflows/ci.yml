@@ -5,57 +5,59 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
     tags:
       - "v*"
 
 jobs:
-  build:
-    name: Build wheel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install build
-        run: python -m pip --disable-pip-version-check install build
-
-      - name: Build sdist + wheel
-        run: python -m build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: dist
-          path: dist
-
-  format:
-    name: Format code
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - name: Setup Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
       - name: Checkout
         uses: actions/checkout@v5
       - name: Install requirements
-        run: pip install -r requirements-dev.txt
-      - name: Run isort
-        run: isort --check --profile=black --diff ./pybind11_stubgen
-        if: ${{ failure() ||  success() }}
-      - name: Run black
-        run: black --diff ./pybind11_stubgen
-        if: ${{ failure() ||  success() }}
-      - name: Run flake8
         run: |
-          flake8 \
-            --max-line-length=88 \
-            --extend-ignore=E203 \
-            --extend-exclude=venv/,.pytest_cache/,.ipynb_checkpoints/,tests/,tmp/,build/
+          uv lock --check
+          uv sync
+      - name: Run Ruff as isort
+        run: uv run ruff check --select I,RUF022 --fix --diff ./pybind11_stubgen
         if: ${{ failure() ||  success() }}
+      - name: Run Ruff format
+        run: uv run ruff format --diff ./pybind11_stubgen
+        if: ${{ failure() ||  success() }}
+      - name: Run Ruff
+        run: |
+          uv run ruff check --ignore F401,F821 .
+        if: ${{ failure() ||  success() }}
+
+  build:
+    name: Build wheel
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist + wheel
+        run: |
+          uv lock --check
+          uv build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: dist
+          path: dist
 
   tests:
     name: "Test 🐍 ${{ matrix.config.python }} • pybind-${{ matrix.config.pybind11-branch }} • ${{ matrix.config.numpy-format }}"
@@ -159,31 +161,40 @@ jobs:
         with:
           python-version: ${{ matrix.config.python }}
 
+      - uses: astral-sh/setup-uv@v7
+
       - name: Update CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
-          # https://github.com/pybind/pybind11/blob/914c06fb252b6cc3727d0eedab6736e88a3fcb01/CMakeLists.txt#L13C34-L13C38
           cmake-version: ${{ matrix.config.cmake-version }}
+
+      - name: Create UV venv
+        run: |
+          uv venv .venv
 
       - name: Setup annotations on Linux
         if: runner.os == 'Linux'
-        run: python -m pip install pytest-github-actions-annotate-failures
+        run: uv pip install pytest-github-actions-annotate-failures
 
       - name: Install requirements
-        run: pip install -r "./tests/stubs/python-${{ matrix.config.python }}/requirements.txt"
+        run: uv sync --group dev --no-install-project
 
       - name: Install
         shell: bash
         working-directory: dist
-        run: python -m pip --disable-pip-version-check install *.whl
+        run: uv pip install --disable-pip-version-check *.whl
 
       - name: Install demo module
         shell: bash
-        run: ./tests/install-demo-module.sh --pybind11-branch "${{ matrix.config.pybind11-branch }}"
+        run: |
+          source .venv/bin/activate
+          ./tests/install-demo-module.sh --pybind11-branch "${{ matrix.config.pybind11-branch }}"
 
       - name: Check stubs generation
         shell: bash
-        run: ./tests/check-demo-stubs-generation.sh --stubs-sub-dir "stubs/python-${{ matrix.config.python }}/pybind11-${{ matrix.config.pybind11-branch }}/${{ matrix.config.numpy-format }}" --${{ matrix.config.numpy-format }}
+        run: |
+          source .venv/bin/activate
+          ./tests/check-demo-stubs-generation.sh --stubs-sub-dir "stubs/python-${{ matrix.config.python }}/pybind11-${{ matrix.config.pybind11-branch }}/${{ matrix.config.numpy-format }}" --${{ matrix.config.numpy-format }}
 
       - name: Archive patch
         uses: actions/upload-artifact@v6
@@ -196,7 +207,9 @@ jobs:
 
       - name: Check error generation
         shell: bash
-        run: ./tests/check-demo-errors-generation.sh "pybind11-${{ matrix.config.pybind11-branch }}"
+        run: |
+          source .venv/bin/activate
+          ./tests/check-demo-errors-generation.sh "pybind11-${{ matrix.config.pybind11-branch }}"
 
   test-cli-options:
     name: "Runs on 🐍 ${{ matrix.python }} • ${{ matrix.test-package }}"
@@ -219,28 +232,35 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      - uses: astral-sh/setup-uv@v7
+
       - name: Download build artifacts
         uses: actions/download-artifact@v6
         with:
           name: dist
           path: dist
 
+      - name: Create UV venv
+        run: |
+          uv venv .venv
+
       - name: Setup annotations on Linux
         if: runner.os == 'Linux'
-        run: python -m pip install pytest-github-actions-annotate-failures
+        run: uv pip install pytest-github-actions-annotate-failures
 
       - name: Install
         shell: bash
         working-directory: dist
-        run: python -m pip --disable-pip-version-check install *.whl
+        run: uv pip install --disable-pip-version-check *.whl
 
       - name: "Install ${{ matrix.test-package }}"
         shell: bash
-        run: pip install "${{ matrix.test-package }}"
+        run: uv pip install "${{ matrix.test-package }}"
 
       - name: Generate stubs
         shell: bash
         run: |
+          source .venv/bin/activate
           pybind11-stubgen "${{ matrix.test-package }}" -o flavour-1 --numpy-array-wrap-with-annotated
           pybind11-stubgen "${{ matrix.test-package }}" -o flavour-2 --numpy-array-remove-parameters
           pybind11-stubgen "${{ matrix.test-package }}" -o flavour-3 --print-invalid-expressions-as-is
@@ -249,7 +269,7 @@ jobs:
 
   publish:
     name: Publish distribution
-    needs: [build, format, tests, test-cli-options]
+    needs: [check, build, tests, test-cli-options]
     if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags')
     runs-on: ubuntu-latest
     permissions:
