@@ -153,13 +153,11 @@ class Printer:
 
     def _is_overload(self, func: Function) -> bool:
         """Check if a function has the @overload decorator."""
-        return any(
-            "overload" in str(decorator) for decorator in func.decorators
-        )
+        return any("overload" in str(decorator) for decorator in func.decorators)
 
     def _create_fallback_function(self, func: Function) -> Function:
         """Create a fallback function with broad parameter types.
-        
+
         Returns a new Function with:
         - Same name
         - All parameters accept Any type
@@ -180,10 +178,10 @@ class Printer:
                 annotation=ResolvedType(QualifiedName.from_str("typing.Any")),
             )
             fallback_args.append(new_arg)
-        
+
         # Return type is Any
         fallback_return = ResolvedType(QualifiedName.from_str("typing.Any"))
-        
+
         fallback_func = Function(
             name=func.name,
             args=fallback_args,
@@ -202,7 +200,7 @@ class Printer:
         create_wrapper,
     ) -> list:
         """Generic method to process items and insert fallback definitions after overload groups.
-        
+
         Args:
             items: List of items to process (Functions or Methods)
             get_key: Callable to extract the grouping key from an item
@@ -216,7 +214,7 @@ class Printer:
         # Group items by key while preserving order
         groups: dict = {}
         group_order: list = []
-        
+
         for item in items:
             key = get_key(item)
             if key not in groups:
@@ -228,7 +226,7 @@ class Printer:
         for key in group_order:
             group = groups[key]
             result.extend(group)
-            
+
             # Check if any item in the group has an overload
             if any(self._is_overload(get_function(item)) for item in group):
                 fallback_func = self._create_fallback_function(get_function(group[0]))
@@ -247,9 +245,7 @@ class Printer:
             create_wrapper=lambda f, _: f,
         )
 
-    def _process_methods_with_fallbacks(
-        self, methods: list[Method]
-    ) -> list[Method]:
+    def _process_methods_with_fallbacks(self, methods: list[Method]) -> list[Method]:
         """Process methods and insert fallback definitions after overload groups."""
         return self._process_with_fallbacks(
             methods,
