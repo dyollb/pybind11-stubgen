@@ -20,6 +20,7 @@ from pybind11_stubgen.structs import (
     Modifier,
     Module,
     Property,
+    QualifiedName,
     ResolvedType,
     TypeVar_,
     Value,
@@ -141,12 +142,123 @@ class Printer:
         self,
         invalid_expr_as_ellipses: bool,
         print_value_comments: bool = False,
+        print_overload_fallback: bool = False,
     ):
         self.invalid_expr_as_ellipses = invalid_expr_as_ellipses
         self.print_value_comments = print_value_comments
+        self.print_overload_fallback = print_overload_fallback
 
     def _order_classes(self, classes: list[Class]) -> list[Class]:
         return _topological_sort_classes(classes)
+
+    def _is_overload(self, func: Function) -> bool:
+        """Check if a function has the @overload decorator."""
+        return any(
+            "overload" in str(decorator) for decorator in func.decorators
+        )
+
+    def _create_fallback_function(self, func: Function) -> Function:
+        """Create a fallback function with broad parameter types.
+        
+        Returns a new Function with:
+        - Same name
+        - All parameters accept Any type
+        - Return type is Any
+        - No @overload decorator
+        - No docstring
+        """
+        fallback_args = []
+        for arg in func.args:
+            # Keep the argument structure but replace annotation with Any
+            new_arg = Argument(
+                name=arg.name,
+                pos_only=arg.pos_only,
+                kw_only=arg.kw_only,
+                variadic=arg.variadic,
+                kw_variadic=arg.kw_variadic,
+                default=arg.default,
+                annotation=ResolvedType(QualifiedName.from_str("typing.Any")),
+            )
+            fallback_args.append(new_arg)
+        
+        # Return type is Any
+        fallback_return = ResolvedType(QualifiedName.from_str("typing.Any"))
+        
+        fallback_func = Function(
+            name=func.name,
+            args=fallback_args,
+            returns=fallback_return,
+            doc=None,
+            decorators=[],  # No @overload decorator
+            type_vars=func.type_vars,
+        )
+        return fallback_func
+
+    def _process_with_fallbacks(
+        self,
+        items: list,
+        get_key,
+        get_function,
+        create_wrapper,
+    ) -> list:
+        """Generic method to process items and insert fallback definitions after overload groups.
+        
+        Args:
+            items: List of items to process (Functions or Methods)
+            get_key: Callable to extract the grouping key from an item
+            get_function: Callable to extract the Function from an item
+            create_wrapper: Callable to wrap a Function back into the original type
+                           (receives fallback_func and first original item)
+        """
+        if not self.print_overload_fallback or not items:
+            return items
+
+        # Group items by key while preserving order
+        groups: dict = {}
+        group_order: list = []
+        
+        for item in items:
+            key = get_key(item)
+            if key not in groups:
+                groups[key] = []
+                group_order.append(key)
+            groups[key].append(item)
+
+        result = []
+        for key in group_order:
+            group = groups[key]
+            result.extend(group)
+            
+            # Check if any item in the group has an overload
+            if any(self._is_overload(get_function(item)) for item in group):
+                fallback_func = self._create_fallback_function(get_function(group[0]))
+                result.append(create_wrapper(fallback_func, group[0]))
+
+        return result
+
+    def _process_functions_with_fallbacks(
+        self, functions: list[Function]
+    ) -> list[Function]:
+        """Process functions and insert fallback definitions after overload groups."""
+        return self._process_with_fallbacks(
+            functions,
+            get_key=lambda f: f.name,
+            get_function=lambda f: f,
+            create_wrapper=lambda f, _: f,
+        )
+
+    def _process_methods_with_fallbacks(
+        self, methods: list[Method]
+    ) -> list[Method]:
+        """Process methods and insert fallback definitions after overload groups."""
+        return self._process_with_fallbacks(
+            methods,
+            get_key=lambda m: (m.modifier, m.function.name),
+            get_function=lambda m: m.function,
+            create_wrapper=lambda f, orig_method: Method(
+                function=f, modifier=orig_method.modifier
+            ),
+        )
 
     def print_alias(self, alias: Alias) -> list[str]:
         return [f"{alias.name} = {alias.origin}"]
@@ -224,9 +336,11 @@ class Printer:
         for alias in sorted(class_.aliases, key=lambda a: a.name):
             result.extend(self.print_alias(alias))
 
-        for method in sorted(
+        sorted_methods = sorted(
             class_.methods, key=lambda m: (modifier_order[m.modifier], m.function.name)
-        ):
+        )
+        processed_methods = self._process_methods_with_fallbacks(sorted_methods)
+        for method in processed_methods:
             result.extend(self.print_method(method))
 
         for prop in sorted(class_.properties, key=lambda p: p.name):
@@ -353,7 +467,9 @@ class Printer:
         for class_ in self._order_classes(module.classes):
             result.extend(self.print_class(class_))
 
-        for func in sorted(module.functions, key=lambda f: f.name):
+        sorted_functions = sorted(module.functions, key=lambda f: f.name)
+        processed_functions = self._process_functions_with_fallbacks(sorted_functions)
+        for func in processed_functions:
             result.extend(self.print_function(func))
 
         for attr in sorted(module.attributes, key=lambda a: a.name):

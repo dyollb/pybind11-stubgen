@@ -77,6 +77,7 @@ class CLIArgs(Namespace):
     print_invalid_expressions_as_is: bool
     print_safe_value_reprs: re.Pattern | None
     print_value_comments: bool
+    print_overload_fallback: bool
     exit_code: bool
     dry_run: bool
     stub_extension: str
@@ -203,6 +204,15 @@ def arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--print-overload-fallback",
+        default=False,
+        action="store_true",
+        dest="print_overload_fallback",
+        help="Emit a concrete fallback definition after overload sets. "
+        "This allows re-exports to resolve the symbol via tools like Griffe.",
+    )
+
+    parser.add_argument(
         "--exit-code",
         action="store_true",
         dest="exit_code",
@@ -325,6 +335,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     printer = Printer(
         invalid_expr_as_ellipses=not args.print_invalid_expressions_as_is,
         print_value_comments=args.print_value_comments,
+        print_overload_fallback=args.print_overload_fallback,
     )
 
     run(
